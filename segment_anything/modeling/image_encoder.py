@@ -229,36 +229,33 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, H, W, _ = x.shape
-        # qkv with shape (3, B, nHead, H * W, C)
+
+        # --- QKV ---
         qkv = (
             self.qkv(x).reshape(B, H * W, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
         )
-        # q, k, v with shape (B * nHead, H * W, C)
         q, k, v = qkv.reshape(3, B * self.num_heads, H * W, -1).unbind(0)
 
-        # --- Grad-SAM: calcula atenção com gradientes ---
+        # --- Calcula attn_scores ---
         attn_scores = (q * self.scale) @ k.transpose(-2, -1)  # [B*nHeads, HW, HW]
+
+        # --- Grad-SAM: habilita gradientes nos scores ---
         if self.enable_grad:
             attn_scores.requires_grad_(True)
             attn_scores.retain_grad()
+            self._attn_scores_for_hook = attn_scores  # ← salva para uso externo
 
+        # --- Positional encoding (opcional) ---
         if self.use_rel_pos:
             attn_scores = add_decomposed_rel_pos(
                 attn_scores, q, self.rel_pos_h, self.rel_pos_w, (H, W), (H, W)
             )
 
+        # --- Aplica softmax e projeta ---
         attn = attn_scores.softmax(dim=-1)
-
-        x = (
-            (attn @ v)
-            .view(B, self.num_heads, H, W, -1)
-            .permute(0, 2, 3, 1, 4)
-            .reshape(B, H, W, -1)
-        )
+        x = (attn @ v).view(B, self.num_heads, H, W, -1)
+        x = x.permute(0, 2, 3, 1, 4).reshape(B, H, W, -1)
         x = self.proj(x)
-
-        # --- Armazena atenção bruta como atributo, se quiser acesso externo ---
-        self.last_attn_scores = attn_scores  # opcional
 
         return x
 
